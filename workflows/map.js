@@ -172,6 +172,8 @@ Discipline (AGENTS.md governs; target ~8 tool calls):
    add the object to the linker script in ROM address order.
 4. Verify: \`make check\` (tail -3) MUST pass. If it fails, revert everything
    (git checkout/clean if a repo) and return status=blocked with the detail.
+   There is NO SUCH THING as an expected mismatch — a red oracle is never
+   committed, never rationalized.
 5. Commit: if the tree is a git repository, commit the peel as one commit
    (message: "peel: <name> [<start>, <end>)"). Never name commercial titles.
 
