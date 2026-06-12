@@ -1,0 +1,15 @@
+# The image and everything derived from its bytes stays local.
+*.gba
+*.sav
+baserom.*
+asm/
+build/
+out/
+*.o
+*.elf
+*.map
+
+# Editor/OS noise
+.DS_Store
+node_modules/
+__pycache__/
