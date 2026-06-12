@@ -204,24 +204,43 @@ def main() -> int:
             if pool_or_padding(rom_bytes, gap_lo, gap_hi):
                 continue
             evidence = f"gap of {size} bytes after mapped code (not pool/padding)"
-            rank = size
+            gaps.append({
+                "address": f"0x{start:08x}", "mode": prev_mode,
+                "evidence": evidence, "_size": size,
+            })
         else:
-            # Probe the leading edge — accept only a confirmed function.
-            probe = leading_function(a.rom, start, gap_hi, prev_mode, a.objdump)
-            if probe is None:
-                continue
-            evidence = (
-                f"function at the start of a {size}-byte gap "
-                f"(boundary {start:#x}..{probe:#x}; rest is data)"
-            )
-            rank = probe - start
-        gaps.append({
-            "address": f"0x{start:08x}", "mode": prev_mode,
-            "evidence": evidence, "_size": rank,
-        })
+            # A large gap is often a long RUN of small functions reached
+            # only by computed branches (a handler table). Chain through
+            # it in one pass — probe the leading edge, and if it's a
+            # clean function, advance past it and probe again — so a
+            # single survey surfaces the whole run instead of one
+            # function per drain. Stop at the first non-function (real
+            # data), or when the per-gap cap is hit.
+            cur = start
+            found = 0
+            while cur < gap_hi and found < a.max:
+                probe = leading_function(a.rom, cur, gap_hi, prev_mode, a.objdump)
+                if probe is None:
+                    break
+                gaps.append({
+                    "address": f"0x{cur:08x}", "mode": prev_mode,
+                    "evidence": (
+                        f"function in a {size}-byte gap "
+                        f"({cur:#x}..{probe:#x}; computed-branch target)"
+                    ),
+                    "_size": probe - cur,
+                })
+                found += 1
+                # Skip any inter-function pool/padding before the next.
+                nxt = probe
+                while nxt < gap_hi and pool_or_padding(rom_bytes, nxt, min(nxt + 4, gap_hi)):
+                    nxt += 4
+                cur = nxt
 
     ordered = sorted(candidates.values(), key=lambda c: -c["calls"])
-    ordered += sorted(gaps, key=lambda g: g["_size"])
+    # Gaps in ADDRESS order: a chained run through one large gap must peel
+    # front-to-back so each incbin split is clean.
+    ordered += sorted(gaps, key=lambda g: int(g["address"], 16))
     ordered = [c for c in ordered if int(c["address"], 16) not in skips]
     for c in ordered:
         c.pop("calls", None)

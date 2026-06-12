@@ -10,7 +10,17 @@
 // args (all optional):
 //   tree          target tree (default "." — the cloned repo itself)
 //   mapper        gba-mapper checkout holding tools/ (default: tree)
-//   maxFunctions  peel budget for this run (default 6)
+//   maxFunctions  optional per-run peel CAP. Default UNBOUNDED: the loop
+//                 runs until the frontier is genuinely dry (no functions
+//                 left, only data), which is the whole point of an
+//                 overnight run. Set it only to deliberately stop early.
+//
+// The loop is uninterrupted by design: it keeps draining the frontier
+// round after round until no real function remains. The only hard stop
+// other than "dry" is the workflow runtime's own agent ceiling (~1000
+// agents/run); the loop is fully resumable (all state lives in the tree
+// + labels TOML), so on a cartridge larger than one run's ceiling you
+// just launch it again and it continues where it left off.
 //
 // Invariant inherited from the tools: `make check` (byte-identity
 // against the user's own ROM) must be green after every step; nothing
@@ -19,7 +29,7 @@
 export const meta = {
   name: 'gba-map',
   description: 'Resumable GBA function-mapping loop: peel, verify byte-identity, grow the labels TOML',
-  whenToUse: 'Inside a gba-mapper clone with a ROM dropped in (or pointed at any byte-identity decomp tree via args.tree). Each run peels up to maxFunctions verified functions and updates the map.',
+  whenToUse: 'Inside a gba-mapper clone with a ROM dropped in (or pointed at any byte-identity decomp tree via args.tree). Drains the frontier until no real function remains (unbounded by default; resumable across runs). Pass maxFunctions only to cap a run deliberately.',
   phases: [
     { title: 'Survey', detail: 'oracle green, locate ROM + map, find the frontier' },
     { title: 'Peel', detail: 'one verified function per step, one commit each' },
@@ -35,7 +45,9 @@ if (typeof a === 'string') {
 }
 const tree = (a && a.tree) || '.'
 const mapper = (a && a.mapper) || tree
-const maxFunctions = (a && a.maxFunctions) || 6
+// Unbounded by default — drain until the frontier is dry. A caller may
+// pass a number to cap a run deliberately.
+const maxFunctions = (a && a.maxFunctions) || Infinity
 
 const SURVEY = {
   type: 'object',
@@ -191,10 +203,14 @@ Return ONLY the structured result.`
 const attempted = new Set()
 const audits = []
 let queue = survey.frontier.filter(t => !attempted.has(t.address))
-const MAX_ROUNDS = 12
+// Safety backstop only — NOT a work limit. The loop's real exit is
+// "frontier dry" below; this just bounds a pathological non-converging
+// run. Set high so it never stops a genuine mapping early (the runtime
+// agent ceiling bites first on a large cartridge, and the run resumes).
+const MAX_ROUNDS = 1000
 for (let round = 1; round <= MAX_ROUNDS; round++) {
   if (results.filter(r => r.status === 'peeled').length >= maxFunctions) {
-    log(`peel budget (${maxFunctions}) reached`)
+    log(`peel cap (${maxFunctions}) reached — stopping early as requested`)
     break
   }
   if (queue.length === 0 && round > 1) {
