@@ -87,9 +87,11 @@ const REPORT = {
 }
 
 const ctx = `Tree: ${tree}
-Tools: ${mapper}/tools (peel.py, boundary.py, seed_from_decomp.py, setup.py, labels_toml.py)
+Tools: ${mapper}/tools (peel.py, boundary.py, frontier.py, wire.py, seed_from_decomp.py, setup.py)
 Docs: ${mapper}/docs/workflow.md and ${mapper}/AGENTS.md hold the full discipline.
-The working map is the gba-labels v2 TOML beside the ROM (<rom stem>.labels.toml).`
+The working map is the gba-labels v2 TOML beside the ROM (<rom stem>.labels.toml).
+Token discipline: the tools do the heavy lifting — run them and read their output.
+Do not hand-roll disassembly sweeps, coverage math, or convention archaeology.`
 
 // Models are pinned cheap by design: mapping is a volume game. Sonnet
 // carries the judgment steps (survey, peel); Haiku writes the report.
@@ -100,22 +102,15 @@ phase('Survey')
 const survey = await agent(
   `You are surveying a GBA mapping tree before a peel run. ${ctx}
 
-Steps:
+Exactly these steps, ~5 tool calls total:
 1. If the tree has no Makefile AND no ROM, fail (ok=false, reason). If it has a ROM
-   but no Makefile, bootstrap: python3 ${mapper}/tools/setup.py --tree ${tree}, then
-   verify. If the tree is an existing decomp with its own harness, leave it alone.
-2. Run \`make check\` in the tree. It MUST pass; if not, ok=false with the failure.
-3. Locate the ROM (the .gba the harness builds against) and the working labels TOML
-   beside it. A missing TOML is fine (empty map, mappedCount=0).
-4. Build the frontier: read the TOML's [[functions]] coverage, find unmapped ranges
-   that are plausibly code. Evidence ladder, best first: (a) bl/blx targets from
-   already-mapped functions that land in unmapped space (disassemble a few mapped
-   functions with arm-none-eabi-objdump to harvest these); (b) gaps between
-   consecutive mapped functions inside the code span whose bytes disassemble
-   coherently (use ${mapper}/tools/boundary.py --rom <rom> <addr> to probe);
-   (c) the address right after a mapped function's end+pool. Do NOT include ranges
-   that are clearly literal pools or data tables. Cap the frontier at 24 entries.
-5. Report codeSpan (lowest..highest mapped address, or the header entry if empty).
+   but no Makefile, bootstrap: python3 ${mapper}/tools/setup.py --tree ${tree}.
+   If the tree is an existing decomp with its own harness, leave it alone.
+2. Run \`make check\` in the tree (pipe through tail -3). MUST pass; else ok=false.
+3. Identify the ROM the harness builds against (Makefile/check script names it).
+4. Run: python3 ${mapper}/tools/frontier.py --rom <rom>
+   Its JSON is the frontier — relay codeSpan/mapped/candidates as-is. Do not
+   re-derive or second-guess it; do not disassemble anything yourself.
 
 Return ONLY the structured result.`,
   { schema: SURVEY, label: 'survey', model: JUDGE },
@@ -136,10 +131,9 @@ while (results.filter(r => r.status === 'peeled').length < maxFunctions) {
     resurveyed = true
     const again = await agent(
       `Refresh the peel frontier for the mapping tree. ${ctx}
-The map has grown since the last survey. Re-derive candidate function entries
-exactly as in the survey discipline (bl targets into unmapped space first, then
-coherent gaps), excluding everything already in the TOML. Cap at 24. make check
-state must be left untouched. Return ONLY the structured result.`,
+The map has grown since the last survey. Two tool calls: identify the ROM, then
+run python3 ${mapper}/tools/frontier.py --rom <rom> and relay its JSON as-is
+(ok=true, labelsPath beside the ROM). Return ONLY the structured result.`,
       { schema: SURVEY, label: 'resurvey', phase: 'Peel', model: JUDGE },
     )
     queue = (again && again.ok && again.frontier) || []
@@ -153,21 +147,20 @@ state must be left untouched. Return ONLY the structured result.`,
 Target: address ${target.address}, suspected mode ${target.mode}.
 Evidence so far: ${target.evidence || 'none recorded'}
 
-Discipline (AGENTS.md governs; summary):
+Discipline (AGENTS.md governs; target ~8 tool calls):
 1. Probe: for thumb run
    python3 ${mapper}/tools/boundary.py --rom <rom> ${target.address} --json
-   to get the recommended end; for arm, disassemble with objdump and find the
-   epilogue/pool boundary yourself. If the bytes are clearly data or a literal
-   pool, return status=skipped with the evidence — that is a good outcome.
+   to get the recommended end; for arm, one objdump of the area to find the
+   epilogue/pool boundary. If the bytes are clearly data or a literal pool,
+   return status=skipped with the evidence — that is a good outcome.
 2. Peel: python3 ${mapper}/tools/peel.py --tree ${tree} --start <addr> --end <end>
    --mode <mode>  (this also records the function in the labels TOML).
-3. Wire: follow THIS tree's existing conventions — shrink the covering .incbin so
-   the bytes aren't duplicated, and add the new object to the linker script in
-   ROM address order. Study how previously peeled functions are wired here and
-   match them exactly.
-4. Verify: \`make check\` MUST pass. If it fails, fix or revert everything
-   (including the TOML entry — git checkout works if the tree is a repo) and
-   return status=blocked with the failure detail.
+3. Wire: python3 ${mapper}/tools/wire.py --tree ${tree} --start <addr> --end <end>
+   On exit 3 only (it refuses when the tree doesn't match its model), wire by
+   hand following this tree's existing conventions: shrink the covering .incbin,
+   add the object to the linker script in ROM address order.
+4. Verify: \`make check\` (tail -3) MUST pass. If it fails, revert everything
+   (git checkout/clean if a repo) and return status=blocked with the detail.
 5. Commit: if the tree is a git repository, commit the peel as one commit
    (message: "peel: <name> [<start>, <end>)"). Never name commercial titles.
 
@@ -184,10 +177,10 @@ phase('Report')
 const report = await agent(
   `Summarize the mapping state of the tree. ${ctx}
 
-1. Confirm \`make check\` is green (it must be — say so explicitly).
-2. Parse the labels TOML (python3 + tomllib): mappedCount, namedCount, total
-   coverage bytes (sum of end-address where present), and the largest remaining
-   unmapped gaps inside the code span.
+1. Confirm \`make check\` is green (tail -3; it must be — say so explicitly).
+2. Run python3 ${mapper}/tools/frontier.py --rom <rom> — its JSON carries
+   mapped/coverageBytes and the remaining candidates. namedCount = one
+   python3 -c tomllib count of entries with a name.
 3. One-paragraph summary including the recompiler handoff: the TOML is consumed
    directly by \`recomp build\` when it sits beside the image, or via
    \`recomp labels import\`.
