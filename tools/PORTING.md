@@ -30,8 +30,13 @@ hard-coded title. Per-file notes:
   target format; add the Ghidra headless post-script (functions →
   labels TOML).
 
-Explicitly NOT ported: m2c, the permuter, agbcc, objdiff, charmap/
-preproc — those serve matching C decompilation, which is out of scope
-here (and they carry licenses this repo doesn't want to inherit).
-The toolchain dependency floor is: python3, binutils for ARM
-(`arm-none-eabi-{as,ld,objdump,objcopy}`), `sha256sum`.
+The scope is the **peel phase only**. Verification is the pilot's
+chain unchanged: assemble → link at the original addresses → SHA
+compare, driven by the same arm-none-eabi binutils the agbcc
+toolchain install provides. agbcc's C compiler itself stays unused —
+no C is ever compiled here — as do m2c, the permuter, objdiff, and
+charmap/preproc, which all serve matching C decompilation (out of
+scope, and carrying licenses this repo doesn't want to inherit; the
+binutils/agbcc tools are invoked as external programs, never
+vendored). The dependency floor is: python3, arm-none-eabi
+`{as,ld,objdump,objcopy}`, `sha256sum`.
