@@ -193,6 +193,51 @@ Return ONLY the structured result.`
 }
 
 phase('Report')
+// Wrong skips are the one failure the byte-identity oracle can't
+// catch (it gates correctness, not completeness), and the cheap tier
+// is most fallible exactly there — e.g. dismissing a bl-target for
+// lacking a push prologue when prologue-less leaf helpers exist. One
+// batch audit on the judge tier; verdicts surface in the result and
+// re-enter via the frontier next run.
+let skipAudit = null
+const skips = results.filter(r => r.status === 'skipped')
+if (skips.length) {
+  skipAudit = await agent(
+    `Adversarially audit ${skips.length} skip decision(s) from a mapping run. ${ctx}
+
+A cheaper tier judged these frontier candidates "not a function" (data/pool/
+padding). For each, verify with the tools — objdump the area, run
+${mapper}/tools/boundary.py — remembering: a bl target IS a function entry even
+without a push prologue (leaf helpers); structured words after an epilogue are
+usually pool. Do NOT modify the tree; verdicts only.
+
+${skips.map(s => `- ${s.address || '?'}: ${s.detail}`).join('\n')}
+
+Return ONLY the structured result.`,
+    {
+      schema: {
+        type: 'object',
+        required: ['verdicts'],
+        properties: {
+          verdicts: {
+            type: 'array',
+            items: {
+              type: 'object',
+              required: ['address', 'verdict', 'reasoning'],
+              properties: {
+                address: { type: 'string' },
+                verdict: { type: 'string', enum: ['data', 'function', 'unsure'] },
+                reasoning: { type: 'string' },
+              },
+            },
+          },
+        },
+      },
+      label: 'skip-audit', model: JUDGE,
+    },
+  )
+}
+
 const report = await agent(
   `Summarize the mapping state of the tree. ${ctx}
 
@@ -211,7 +256,8 @@ Return ONLY the structured result.`,
 return {
   survey: { mapped: survey.mappedCount, frontier: survey.frontier.length },
   peeled: results.filter(r => r.status === 'peeled'),
-  skipped: results.filter(r => r.status === 'skipped'),
+  skipped: skips,
+  skipAudit,
   blocked: results.filter(r => r.status === 'blocked'),
   report,
 }
