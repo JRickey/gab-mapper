@@ -93,8 +93,12 @@ The working map is the gba-labels v2 TOML beside the ROM (<rom stem>.labels.toml
 Token discipline: the tools do the heavy lifting — run them and read their output.
 Do not hand-roll disassembly sweeps, coverage math, or convention archaeology.`
 
-// Models are pinned cheap by design: mapping is a volume game. Sonnet
-// carries the judgment steps (survey, peel); Haiku writes the report.
+// Models are pinned cheap by design: mapping is a volume game. Since
+// the tools carry the heavy lifting (frontier.py, wire.py), everything
+// runs on Haiku first; a peel that comes back blocked or empty is
+// retried once on Sonnet (the escalation rung: ambiguous data-vs-code
+// calls, ARM boundaries, manual wiring on nonstandard trees). Each
+// result records which tier it needed, so the ladder stays honest.
 const JUDGE = 'sonnet'
 const CHEAP = 'haiku'
 
@@ -113,7 +117,7 @@ Exactly these steps, ~5 tool calls total:
    re-derive or second-guess it; do not disassemble anything yourself.
 
 Return ONLY the structured result.`,
-  { schema: SURVEY, label: 'survey', model: JUDGE },
+  { schema: SURVEY, label: 'survey', model: CHEAP },
 )
 
 if (!survey || !survey.ok) {
@@ -134,19 +138,24 @@ while (results.filter(r => r.status === 'peeled').length < maxFunctions) {
 The map has grown since the last survey. Two tool calls: identify the ROM, then
 run python3 ${mapper}/tools/frontier.py --rom <rom> and relay its JSON as-is
 (ok=true, labelsPath beside the ROM). Return ONLY the structured result.`,
-      { schema: SURVEY, label: 'resurvey', phase: 'Peel', model: JUDGE },
+      { schema: SURVEY, label: 'resurvey', phase: 'Peel', model: CHEAP },
     )
     queue = (again && again.ok && again.frontier) || []
   }
   const target = queue.shift()
   if (!target) break
 
-  const r = await agent(
-    `Peel exactly ONE function in the mapping tree, fully verified. ${ctx}
+  const peelPrompt = (escalated) => `Peel exactly ONE function in the mapping tree, fully verified. ${ctx}
 
 Target: address ${target.address}, suspected mode ${target.mode}.
 Evidence so far: ${target.evidence || 'none recorded'}
-
+${escalated ? `
+ESCALATION: a cheaper attempt at this target came back blocked or empty. First
+make the tree pristine — git status must show no peel debris (git checkout/
+clean it if a repo; delete stray asm/disasm_${target.address}.s otherwise) and
+\`make check\` must pass — then take the harder path yourself (manual boundary
+reasoning, manual wiring) where the tools refuse.
+` : ''}
 Discipline (AGENTS.md governs; target ~8 tool calls):
 1. Probe: for thumb run
    python3 ${mapper}/tools/boundary.py --rom <rom> ${target.address} --json
@@ -164,12 +173,22 @@ Discipline (AGENTS.md governs; target ~8 tool calls):
 5. Commit: if the tree is a git repository, commit the peel as one commit
    (message: "peel: <name> [<start>, <end>)"). Never name commercial titles.
 
-Return ONLY the structured result.`,
-    { schema: PEEL, label: `peel:${target.address}`, phase: 'Peel', model: JUDGE },
-  )
+Return ONLY the structured result.`
+
+  let r = await agent(peelPrompt(false), {
+    schema: PEEL, label: `peel:${target.address}`, phase: 'Peel', model: CHEAP,
+  })
+  let tier = CHEAP
+  if (!r || r.status === 'blocked') {
+    r = await agent(peelPrompt(true), {
+      schema: PEEL, label: `peel+:${target.address}`, phase: 'Peel', model: JUDGE,
+    })
+    tier = JUDGE
+  }
   if (!r) continue
+  r.tier = tier
   results.push(r)
-  log(`${target.address}: ${r.status}${r.name ? ` (${r.name})` : ''}`)
+  log(`${target.address}: ${r.status}${r.name ? ` (${r.name})` : ''} [${tier}]`)
   if (r.status === 'blocked') break
 }
 
