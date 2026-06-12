@@ -86,6 +86,20 @@ def main() -> int:
     a = p.parse_args()
 
     lpath = a.labels or labels_toml.state_path(a.rom)
+    # Adjudicated non-code: addresses confirmed data/pool live in a
+    # sidecar (one "0xADDR data <reason>" line each, appended by the
+    # workflow's skip audit) so the frontier converges instead of
+    # re-proposing them forever.
+    skips: set[int] = set()
+    skips_file = Path(str(lpath).replace(".labels.toml", ".skips.txt"))
+    if skips_file.exists():
+        for line in skips_file.read_text().splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                try:
+                    skips.add(int(line.split()[0], 16))
+                except ValueError:
+                    pass
     if not lpath.exists():
         print(json.dumps({"codeSpan": None, "mapped": 0, "coverageBytes": 0,
                           "candidates": [], "note": f"{lpath} missing — empty map; "
@@ -167,6 +181,7 @@ def main() -> int:
 
     ordered = sorted(candidates.values(), key=lambda c: -c["calls"])
     ordered += sorted(gaps, key=lambda g: g["_size"])
+    ordered = [c for c in ordered if int(c["address"], 16) not in skips]
     for c in ordered:
         c.pop("calls", None)
         c.pop("_size", None)

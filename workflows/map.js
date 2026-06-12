@@ -127,34 +127,36 @@ log(`map: ${survey.mappedCount} functions; frontier: ${survey.frontier.length} c
 
 phase('Peel')
 const results = []
-let queue = survey.frontier.slice()
-let resurveyed = false
-while (results.filter(r => r.status === 'peeled').length < maxFunctions) {
-  if (queue.length === 0 && !resurveyed) {
-    // The frontier moves as peels land; one refresh per run.
-    resurveyed = true
-    const again = await agent(
-      `Refresh the peel frontier for the mapping tree. ${ctx}
-The map has grown since the last survey. Two tool calls: identify the ROM, then
-run python3 ${mapper}/tools/frontier.py --rom <rom> and relay its JSON as-is
-(ok=true, labelsPath beside the ROM). Return ONLY the structured result.`,
-      { schema: SURVEY, label: 'resurvey', phase: 'Peel', model: CHEAP },
-    )
-    queue = (again && again.ok && again.frontier) || []
-  }
-  const target = queue.shift()
-  if (!target) break
+const AUDIT = {
+  type: 'object',
+  required: ['verdicts'],
+  properties: {
+    verdicts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        required: ['address', 'verdict', 'reasoning'],
+        properties: {
+          address: { type: 'string' },
+          verdict: { type: 'string', enum: ['data', 'function', 'unsure'] },
+          reasoning: { type: 'string' },
+        },
+      },
+    },
+  },
+}
 
-  const peelPrompt = (escalated) => `Peel exactly ONE function in the mapping tree, fully verified. ${ctx}
+const peelPrompt = (target, escalated) => `Peel exactly ONE function in the mapping tree, fully verified. ${ctx}
 
 Target: address ${target.address}, suspected mode ${target.mode}.
 Evidence so far: ${target.evidence || 'none recorded'}
 ${escalated ? `
-ESCALATION: a cheaper attempt at this target came back blocked or empty. First
-make the tree pristine — git status must show no peel debris (git checkout/
-clean it if a repo; delete stray asm/disasm_${target.address}.s otherwise) and
-\`make check\` must pass — then take the harder path yourself (manual boundary
-reasoning, manual wiring) where the tools refuse.
+ESCALATION: a cheaper attempt at this target came back blocked, empty, or
+wrongly skipped. First make the tree pristine — git status must show no peel
+debris (git checkout/clean it if a repo; delete stray
+asm/disasm_${target.address}.s otherwise) and \`make check\` must pass — then
+take the harder path yourself (manual boundary reasoning, manual wiring) where
+the tools refuse.
 ` : ''}
 Discipline (AGENTS.md governs; target ~8 tool calls):
 1. Probe: for thumb run
@@ -175,68 +177,112 @@ Discipline (AGENTS.md governs; target ~8 tool calls):
 
 Return ONLY the structured result.`
 
-  let r = await agent(peelPrompt(false), {
-    schema: PEEL, label: `peel:${target.address}`, phase: 'Peel', model: CHEAP,
-  })
-  let tier = CHEAP
-  if (!r || r.status === 'blocked') {
-    r = await agent(peelPrompt(true), {
-      schema: PEEL, label: `peel+:${target.address}`, phase: 'Peel', model: JUDGE,
-    })
-    tier = JUDGE
+// Drain-until-dry: peel rounds alternate with skip audits until a
+// round produces no peels and no overturned skips. Audited-data
+// addresses persist in the .skips.txt sidecar (frontier.py excludes
+// them), so the frontier converges instead of re-proposing them.
+const attempted = new Set()
+const audits = []
+let queue = survey.frontier.filter(t => !attempted.has(t.address))
+const MAX_ROUNDS = 12
+for (let round = 1; round <= MAX_ROUNDS; round++) {
+  if (results.filter(r => r.status === 'peeled').length >= maxFunctions) {
+    log(`peel budget (${maxFunctions}) reached`)
+    break
   }
-  if (!r) continue
-  r.tier = tier
-  results.push(r)
-  log(`${target.address}: ${r.status}${r.name ? ` (${r.name})` : ''} [${tier}]`)
-  if (r.status === 'blocked') break
-}
+  if (queue.length === 0 && round > 1) {
+    const again = await agent(
+      `Refresh the peel frontier for the mapping tree. ${ctx}
+The map has grown since the last survey. Two tool calls: identify the ROM, then
+run python3 ${mapper}/tools/frontier.py --rom <rom> and relay its JSON as-is
+(ok=true, labelsPath beside the ROM). Return ONLY the structured result.`,
+      { schema: SURVEY, label: `resurvey:r${round}`, phase: 'Peel', model: CHEAP },
+    )
+    queue = ((again && again.ok && again.frontier) || [])
+      .filter(t => !attempted.has(t.address))
+  }
+  if (queue.length === 0) {
+    log(`round ${round}: frontier dry`)
+    break
+  }
 
-phase('Report')
-// Wrong skips are the one failure the byte-identity oracle can't
-// catch (it gates correctness, not completeness), and the cheap tier
-// is most fallible exactly there — e.g. dismissing a bl-target for
-// lacking a push prologue when prologue-less leaf helpers exist. One
-// batch audit on the judge tier; verdicts surface in the result and
-// re-enter via the frontier next run.
-let skipAudit = null
-const skips = results.filter(r => r.status === 'skipped')
-if (skips.length) {
-  skipAudit = await agent(
-    `Adversarially audit ${skips.length} skip decision(s) from a mapping run. ${ctx}
+  const peeledBefore = results.filter(r => r.status === 'peeled').length
+  const roundSkips = []
+  while (queue.length > 0) {
+    if (results.filter(r => r.status === 'peeled').length >= maxFunctions) break
+    const target = queue.shift()
+    attempted.add(target.address)
+    let r = await agent(peelPrompt(target, target.escalate === true), {
+      schema: PEEL,
+      label: `peel${target.escalate ? '+' : ''}:${target.address}`,
+      phase: 'Peel',
+      model: target.escalate ? JUDGE : CHEAP,
+    })
+    let tier = target.escalate ? JUDGE : CHEAP
+    if (!r || r.status === 'blocked') {
+      r = await agent(peelPrompt(target, true), {
+        schema: PEEL, label: `peel+:${target.address}`, phase: 'Peel', model: JUDGE,
+      })
+      tier = JUDGE
+    }
+    if (!r) continue
+    r.tier = tier
+    r.address = r.address || target.address
+    results.push(r)
+    log(`${target.address}: ${r.status}${r.name ? ` (${r.name})` : ''} [${tier}]`)
+    if (r.status === 'skipped') roundSkips.push({ target, r })
+  }
+
+  // Audit this round's skips on the judge tier. Wrong skips are the
+  // one failure the byte-identity oracle can't catch (it gates
+  // correctness, not completeness) — e.g. dismissing a bl-target for
+  // lacking a push prologue when prologue-less leaf helpers exist.
+  // verdict=data persists to the sidecar; verdict=function requeues
+  // escalated.
+  if (roundSkips.length) {
+    const audit = await agent(
+      `Adversarially audit ${roundSkips.length} skip decision(s) from a mapping run. ${ctx}
 
 A cheaper tier judged these frontier candidates "not a function" (data/pool/
 padding). For each, verify with the tools — objdump the area, run
 ${mapper}/tools/boundary.py — remembering: a bl target IS a function entry even
 without a push prologue (leaf helpers); structured words after an epilogue are
-usually pool. Do NOT modify the tree; verdicts only.
+usually pool. Do not modify code, asm, or the linker. For every verdict=data
+address, append one line "0xADDR data <ten-word reason>" to the sidecar file
+next to the labels TOML, named <same stem>.skips.txt (create it if missing) —
+that file is what stops the frontier from re-proposing settled data.
 
-${skips.map(s => `- ${s.address || '?'}: ${s.detail}`).join('\n')}
+${roundSkips.map(s => `- ${s.target.address}: ${s.r.detail}`).join('\n')}
 
 Return ONLY the structured result.`,
-    {
-      schema: {
-        type: 'object',
-        required: ['verdicts'],
-        properties: {
-          verdicts: {
-            type: 'array',
-            items: {
-              type: 'object',
-              required: ['address', 'verdict', 'reasoning'],
-              properties: {
-                address: { type: 'string' },
-                verdict: { type: 'string', enum: ['data', 'function', 'unsure'] },
-                reasoning: { type: 'string' },
-              },
-            },
-          },
-        },
-      },
-      label: 'skip-audit', model: JUDGE,
-    },
-  )
+      { schema: AUDIT, label: `skip-audit:r${round}`, phase: 'Peel', model: JUDGE },
+    )
+    if (audit) {
+      audits.push(audit)
+      for (const v of audit.verdicts || []) {
+        if (v.verdict === 'function') {
+          attempted.delete(v.address)
+          queue.push({
+            address: v.address, mode: 'thumb', escalate: true,
+            evidence: `skip overturned on audit: ${v.reasoning}`,
+          })
+          log(`${v.address}: skip overturned — requeued escalated`)
+        }
+      }
+    }
+  }
+
+  const roundPeeled =
+    results.filter(r => r.status === 'peeled').length - peeledBefore
+  if (roundPeeled === 0 && queue.length === 0) {
+    log(`round ${round}: no progress — stopping`)
+    break
+  }
 }
+
+phase('Report')
+const skipAudit = audits
+const skips = results.filter(r => r.status === 'skipped')
 
 const report = await agent(
   `Summarize the mapping state of the tree. ${ctx}
