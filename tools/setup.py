@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """Bootstrap a mapping tree around a dropped-in ROM (phase 0).
 
-Generates the minimal byte-identity harness — written from first
-principles for this project (nothing borrowed from decomp skeletons;
-mapping needs no C toolchain, no charmap, no data extraction):
+Generates the minimal byte-identity harness — mapping needs no C 
+toolchain, no charmap, no data extraction):
 
   asm/macros.inc   arm/thumb function bracket macros
   asm/rom.s        the whole image as one .incbin

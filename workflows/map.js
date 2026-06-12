@@ -27,9 +27,15 @@ export const meta = {
   ],
 }
 
-const tree = (args && args.tree) || '.'
-const mapper = (args && args.mapper) || tree
-const maxFunctions = (args && args.maxFunctions) || 6
+// Tolerate args arriving as a JSON-encoded string (some callers
+// stringify); a bad parse just means defaults.
+let a = args
+if (typeof a === 'string') {
+  try { a = JSON.parse(a) } catch { a = null }
+}
+const tree = (a && a.tree) || '.'
+const mapper = (a && a.mapper) || tree
+const maxFunctions = (a && a.maxFunctions) || 6
 
 const SURVEY = {
   type: 'object',
@@ -85,6 +91,11 @@ Tools: ${mapper}/tools (peel.py, boundary.py, seed_from_decomp.py, setup.py, lab
 Docs: ${mapper}/docs/workflow.md and ${mapper}/AGENTS.md hold the full discipline.
 The working map is the gba-labels v2 TOML beside the ROM (<rom stem>.labels.toml).`
 
+// Models are pinned cheap by design: mapping is a volume game. Sonnet
+// carries the judgment steps (survey, peel); Haiku writes the report.
+const JUDGE = 'sonnet'
+const CHEAP = 'haiku'
+
 phase('Survey')
 const survey = await agent(
   `You are surveying a GBA mapping tree before a peel run. ${ctx}
@@ -107,7 +118,7 @@ Steps:
 5. Report codeSpan (lowest..highest mapped address, or the header entry if empty).
 
 Return ONLY the structured result.`,
-  { schema: SURVEY, label: 'survey' },
+  { schema: SURVEY, label: 'survey', model: JUDGE },
 )
 
 if (!survey || !survey.ok) {
@@ -129,7 +140,7 @@ The map has grown since the last survey. Re-derive candidate function entries
 exactly as in the survey discipline (bl targets into unmapped space first, then
 coherent gaps), excluding everything already in the TOML. Cap at 24. make check
 state must be left untouched. Return ONLY the structured result.`,
-      { schema: SURVEY, label: 'resurvey', phase: 'Peel' },
+      { schema: SURVEY, label: 'resurvey', phase: 'Peel', model: JUDGE },
     )
     queue = (again && again.ok && again.frontier) || []
   }
@@ -161,7 +172,7 @@ Discipline (AGENTS.md governs; summary):
    (message: "peel: <name> [<start>, <end>)"). Never name commercial titles.
 
 Return ONLY the structured result.`,
-    { schema: PEEL, label: `peel:${target.address}`, phase: 'Peel' },
+    { schema: PEEL, label: `peel:${target.address}`, phase: 'Peel', model: JUDGE },
   )
   if (!r) continue
   results.push(r)
@@ -182,7 +193,7 @@ const report = await agent(
    \`recomp labels import\`.
 
 Return ONLY the structured result.`,
-  { schema: REPORT, label: 'report' },
+  { schema: REPORT, label: 'report', model: CHEAP },
 )
 
 return {
