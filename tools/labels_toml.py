@@ -102,3 +102,25 @@ def add(path: Path, rom_path: Path, fn: Fn) -> bool:
 def default_path(rom_path: Path) -> Path:
     stem = rom_path.name.removesuffix(".gba")
     return rom_path.with_name(f"{stem}.labels.toml")
+
+
+def state_path(rom_path: Path) -> Path:
+    """The working map for an image. The map is keyed by the IMAGE, not
+    the filename: a tree holding the same ROM under two names (it
+    happens — `baserom.gba` next to `title_baserom.gba`) must not grow
+    two state files. Any existing sibling .labels.toml whose pinned sha
+    matches the image wins over the name-derived default; the default
+    name is only used when no matching state exists yet."""
+    default = default_path(rom_path)
+    sha = rom_sha256(rom_path)
+    hits = []
+    for p in sorted(rom_path.parent.glob("*.labels.toml")):
+        try:
+            fsha, _ = load(p)
+        except Exception:
+            continue
+        if fsha == sha:
+            hits.append(p)
+    if default in hits or not hits:
+        return default
+    return hits[0]

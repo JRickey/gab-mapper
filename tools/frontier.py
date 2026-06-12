@@ -85,7 +85,7 @@ def main() -> int:
     p.add_argument("--objdump", default="arm-none-eabi-objdump")
     a = p.parse_args()
 
-    lpath = a.labels or labels_toml.default_path(a.rom)
+    lpath = a.labels or labels_toml.state_path(a.rom)
     if not lpath.exists():
         print(json.dumps({"codeSpan": None, "mapped": 0, "coverageBytes": 0,
                           "candidates": [], "note": f"{lpath} missing — empty map; "

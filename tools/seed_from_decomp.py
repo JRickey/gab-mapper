@@ -89,7 +89,7 @@ def main() -> int:
         fns[key] = fn
         kept += 1
 
-    out = a.out or labels_toml.default_path(a.rom)
+    out = a.out or labels_toml.state_path(a.rom)
     existing = 0
     if out.exists():
         sha, prev = labels_toml.load(out)

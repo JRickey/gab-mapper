@@ -184,7 +184,7 @@ def main() -> int:
 
     labeled = ""
     if not a.no_labels:
-        lpath = Path(a.labels) if a.labels else labels_toml.default_path(rom)
+        lpath = Path(a.labels) if a.labels else labels_toml.state_path(rom)
         fresh = labels_toml.add(
             lpath, rom,
             labels_toml.Fn(address=a.start, mode=a.mode, end=a.end, name=name),
