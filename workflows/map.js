@@ -106,13 +106,18 @@ phase('Survey')
 const survey = await agent(
   `You are surveying a GBA mapping tree before a peel run. ${ctx}
 
-Exactly these steps, ~5 tool calls total:
+Exactly these steps, ~6 tool calls total:
 1. If the tree has no Makefile AND no ROM, fail (ok=false, reason). If it has a ROM
    but no Makefile, bootstrap: python3 ${mapper}/tools/setup.py --tree ${tree}.
    If the tree is an existing decomp with its own harness, leave it alone.
 2. Run \`make check\` in the tree (pipe through tail -3). MUST pass; else ok=false.
 3. Identify the ROM the harness builds against (Makefile/check script names it).
-4. Run: python3 ${mapper}/tools/frontier.py --rom <rom>
+4. Cold-start seed: python3 ${mapper}/tools/seed_entry.py --tree ${tree} --rom <rom>
+   On a brand-new ROM the map is empty and frontier.py would return nothing —
+   this maps the entry point (following the boot chain to the first call-bearing
+   function) so the frontier is productive. It is a no-op if the map already has
+   functions and self-verifies \`make check\`; relay its failure as ok=false.
+5. Run: python3 ${mapper}/tools/frontier.py --rom <rom>
    Its JSON is the frontier — relay codeSpan/mapped/candidates as-is. Do not
    re-derive or second-guess it; do not disassemble anything yourself.
 

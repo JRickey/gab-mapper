@@ -37,8 +37,28 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import boundary
 import labels_toml
 from labels_toml import ROM_BASE
+
+
+def leading_function(rom: Path, start: int, gap_hi: int, mode: str, objdump: str):
+    """If a real function begins at `start`, return its exclusive end;
+    else None. Used to rescue a function sitting at the head of a large
+    data gap (jump-table targets the static call graph never reaches).
+    Only thumb is probed (the boundary detector is thumb-only); a clean
+    entry has no prologue warning and an end strictly inside the gap."""
+    if mode != "thumb":
+        return None
+    try:
+        rep = boundary.detect_boundary(rom, start, None, objdump)
+    except Exception:
+        return None
+    end = rep["recommendedEnd"]
+    prologue_warn = any("doesn't look like a function entry" in w for w in rep["warnings"])
+    if prologue_warn or not (start < end <= gap_hi):
+        return None
+    return end
 
 _BL_RE = re.compile(r"^\s*([0-9a-f]+):\s+[0-9a-f ]+?\s+(bl|blx)\s+0x([0-9a-f]+)", re.I)
 
@@ -160,23 +180,44 @@ def main() -> int:
     for c in candidates.values():
         c["evidence"] = f"bl-target ({c['calls']} call sites in mapped code)"
 
-    # Gaps, screened.
+    # Gaps. A gap of ANY size can begin with a function the static call
+    # graph never reaches (computed-branch / jump-table targets), so a
+    # large gap is NOT assumed to be one data blob — a function sitting
+    # at the start of a big data region must still be found. Small gaps
+    # (<= 0x4000) that aren't pool/padding are proposed on the cheap
+    # screen alone; larger gaps get a boundary probe at the leading edge
+    # and are proposed only when it confirms a real function entry
+    # there (a coherent end inside the gap, no prologue warning). This
+    # is what makes "fully mapped" actually mean every reachable
+    # function, not just the statically-reachable ones.
     gaps = []
     for (s1, e1), (s2, _) in zip(merged, merged[1:]):
         gap_lo, gap_hi = e1, s2
         size = gap_hi - gap_lo
-        if size < 4 or size > 0x4000:
+        if size < 4:
             continue
         start = (gap_lo + 3) & ~3
         if start >= gap_hi or start in candidates or in_map(start):
             continue
-        if pool_or_padding(rom_bytes, gap_lo, gap_hi):
-            continue
         prev_mode = next((m for s, e, m in reversed(ranges) if e <= gap_lo), "thumb")
+        if size <= 0x4000:
+            if pool_or_padding(rom_bytes, gap_lo, gap_hi):
+                continue
+            evidence = f"gap of {size} bytes after mapped code (not pool/padding)"
+            rank = size
+        else:
+            # Probe the leading edge — accept only a confirmed function.
+            probe = leading_function(a.rom, start, gap_hi, prev_mode, a.objdump)
+            if probe is None:
+                continue
+            evidence = (
+                f"function at the start of a {size}-byte gap "
+                f"(boundary {start:#x}..{probe:#x}; rest is data)"
+            )
+            rank = probe - start
         gaps.append({
             "address": f"0x{start:08x}", "mode": prev_mode,
-            "evidence": f"gap of {size} bytes after mapped code (not pool/padding)",
-            "_size": size,
+            "evidence": evidence, "_size": rank,
         })
 
     ordered = sorted(candidates.values(), key=lambda c: -c["calls"])
