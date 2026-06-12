@@ -1,5 +1,11 @@
 # Porting checklist (from the pilot matching-decomp project)
 
+> Status 2026-06-12: peel.py and the boundary detector are ported and
+> verified (see README); setup.py replaces the Makefile/linker
+> generation item with a clean-room harness; pick_target/progress are
+> superseded by the workflow's survey/peel agents for now. This file
+> stays as the record of what came from where.
+
 The pilot repo (private; a full-cartridge LLM-driven matching decomp)
 already runs the peel loop this project needs. Mapping needs the
 *subset below*, generalized to take any image instead of one
