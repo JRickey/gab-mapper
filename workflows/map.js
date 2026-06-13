@@ -231,6 +231,7 @@ run python3 ${mapper}/tools/frontier.py --rom <rom> and relay its JSON as-is
 
   const peeledBefore = results.filter(r => r.status === 'peeled').length
   const roundSkips = []
+  let settledData = 0
   while (queue.length > 0) {
     if (results.filter(r => r.status === 'peeled').length >= maxFunctions) break
     const target = queue.shift()
@@ -290,14 +291,19 @@ Return ONLY the structured result.`,
             evidence: `skip overturned on audit: ${v.reasoning}`,
           })
           log(`${v.address}: skip overturned — requeued escalated`)
+        } else if (v.verdict === 'data') {
+          settledData++
         }
       }
     }
   }
 
+  // Settling data into the sidecar IS progress: the frontier advances
+  // past it (gap heads behind a settled pool word unblock), so a round
+  // of pure data verdicts must resurvey, not stop.
   const roundPeeled =
     results.filter(r => r.status === 'peeled').length - peeledBefore
-  if (roundPeeled === 0 && queue.length === 0) {
+  if (roundPeeled === 0 && queue.length === 0 && settledData === 0) {
     log(`round ${round}: no progress — stopping`)
     break
   }

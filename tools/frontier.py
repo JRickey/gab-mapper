@@ -116,10 +116,17 @@ def main() -> int:
         for line in skips_file.read_text().splitlines():
             line = line.strip()
             if line and not line.startswith("#"):
-                try:
-                    skips.add(int(line.split()[0], 16))
-                except ValueError:
-                    pass
+                # First 0x-token: agents occasionally prepend stray
+                # line numbers when appending; don't let that silently
+                # unparse the address.
+                addr = next(
+                    (t for t in line.split() if t.startswith("0x")), None
+                )
+                if addr:
+                    try:
+                        skips.add(int(addr, 16))
+                    except ValueError:
+                        pass
     if not lpath.exists():
         print(json.dumps({"codeSpan": None, "mapped": 0, "coverageBytes": 0,
                           "candidates": [], "note": f"{lpath} missing — empty map; "
@@ -198,6 +205,11 @@ def main() -> int:
     # sidecar, and is walked past on the next survey — convergence is
     # guaranteed by the skips file, the heuristic just makes it fast.
     def advance_past_known_data(start: int, gap_hi: int) -> int:
+        # The cartridge header (entry branch + logo + metadata,
+        # 0x08000004..0x080000C0) is hardware-mandated data — never
+        # propose inside it.
+        if start < ROM_BASE + 0xC0 and start >= ROM_BASE + 0x4:
+            start = ROM_BASE + 0xC0
         while start < gap_hi and (
             start in skips
             or pool_or_padding(rom_bytes, start, min(start + 4, gap_hi))
