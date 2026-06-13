@@ -190,13 +190,28 @@ def main() -> int:
     # there (a coherent end inside the gap, no prologue warning). This
     # is what makes "fully mapped" actually mean every reachable
     # function, not just the statically-reachable ones.
+    # A gap's leading words are often the PREVIOUS function's literal
+    # pool. Once the skip audit records the head as data, the gap must
+    # not go dark: advance the proposal point past every word that is
+    # either already-audited data (skips) or pool-like. Anything the
+    # pool heuristic misses costs one audit round-trip, lands in the
+    # sidecar, and is walked past on the next survey — convergence is
+    # guaranteed by the skips file, the heuristic just makes it fast.
+    def advance_past_known_data(start: int, gap_hi: int) -> int:
+        while start < gap_hi and (
+            start in skips
+            or pool_or_padding(rom_bytes, start, min(start + 4, gap_hi))
+        ):
+            start += 4
+        return start
+
     gaps = []
     for (s1, e1), (s2, _) in zip(merged, merged[1:]):
         gap_lo, gap_hi = e1, s2
         size = gap_hi - gap_lo
         if size < 4:
             continue
-        start = (gap_lo + 3) & ~3
+        start = advance_past_known_data((gap_lo + 3) & ~3, gap_hi)
         if start >= gap_hi or start in candidates or in_map(start):
             continue
         prev_mode = next((m for s, e, m in reversed(ranges) if e <= gap_lo), "thumb")
