@@ -10,6 +10,10 @@
 // args (all optional):
 //   tree          target tree (default "." — the cloned repo itself)
 //   mapper        gba-mapper checkout holding tools/ (default: tree)
+//   workdir       directory every command runs in — where the ROM, labels
+//                 TOML and Makefile live (default: tree). Pin this when the
+//                 workflow is launched from elsewhere, so the tools never
+//                 auto-detect a ROM from a sibling directory.
 //   maxFunctions  optional per-run peel CAP. Default UNBOUNDED: the loop
 //                 runs until the frontier is genuinely dry (no functions
 //                 left, only data), which is the whole point of an
@@ -45,6 +49,14 @@ if (typeof a === 'string') {
 }
 const tree = (a && a.tree) || '.'
 const mapper = (a && a.mapper) || tree
+// Working directory: where every command runs. Single source of truth for
+// "where the workflow operates" — the ROM, labels TOML and Makefile all
+// live here, and the tools (find_rom, frontier.py, make check) auto-detect
+// from the cwd, so an unpinned cwd silently maps a DIFFERENT image from a
+// sibling tree. Defaults to the target tree; override with args.workdir.
+const workdir = (a && a.workdir) || tree
+// Prefix every shell command with this so the cwd can never drift.
+const cd = `cd "${workdir}" && `
 // Unbounded by default — drain until the frontier is dry. A caller may
 // pass a number to cap a run deliberately.
 const maxFunctions = (a && a.maxFunctions) || Infinity
@@ -99,6 +111,11 @@ const REPORT = {
 }
 
 const ctx = `Tree: ${tree}
+Working directory: ${workdir}. Prefix EVERY shell command with \`${cd}\` — the tools
+(find_rom, frontier.py, seed_entry, make check) auto-detect the ROM from the cwd, so
+an unpinned command silently operates on whatever .gba sits in the wrong directory.
+The ROM is the single .gba inside ${workdir}; if any tool output names a different
+game, the cwd drifted — re-run the command with the \`${cd}\` prefix.
 Tools: ${mapper}/tools (peel.py, boundary.py, frontier.py, wire.py, seed_from_decomp.py, setup.py)
 Docs: ${mapper}/docs/workflow.md and ${mapper}/AGENTS.md hold the full discipline.
 The working map is the gba-labels v2 TOML beside the ROM (<rom stem>.labels.toml).
@@ -120,16 +137,16 @@ const survey = await agent(
 
 Exactly these steps, ~6 tool calls total:
 1. If the tree has no Makefile AND no ROM, fail (ok=false, reason). If it has a ROM
-   but no Makefile, bootstrap: python3 ${mapper}/tools/setup.py --tree ${tree}.
+   but no Makefile, bootstrap: ${cd}python3 ${mapper}/tools/setup.py --tree ${tree}.
    If the tree is an existing decomp with its own harness, leave it alone.
-2. Run \`make check\` in the tree (pipe through tail -3). MUST pass; else ok=false.
-3. Identify the ROM the harness builds against (Makefile/check script names it).
-4. Cold-start seed: python3 ${mapper}/tools/seed_entry.py --tree ${tree} --rom <rom>
+2. Run ${cd}make check | tail -3. MUST pass; else ok=false.
+3. Identify the ROM as the single .gba inside ${workdir} (Makefile names it too).
+4. Cold-start seed: ${cd}python3 ${mapper}/tools/seed_entry.py --tree ${tree} --rom <rom>
    On a brand-new ROM the map is empty and frontier.py would return nothing —
    this maps the entry point (following the boot chain to the first call-bearing
    function) so the frontier is productive. It is a no-op if the map already has
    functions and self-verifies \`make check\`; relay its failure as ok=false.
-5. Run: python3 ${mapper}/tools/frontier.py --rom <rom>
+5. Run: ${cd}python3 ${mapper}/tools/frontier.py --rom <rom>
    Its JSON is the frontier — relay codeSpan/mapped/candidates as-is. Do not
    re-derive or second-guess it; do not disassemble anything yourself.
 
@@ -177,17 +194,17 @@ the tools refuse.
 ` : ''}
 Discipline (AGENTS.md governs; target ~8 tool calls):
 1. Probe: for thumb run
-   python3 ${mapper}/tools/boundary.py --rom <rom> ${target.address} --json
+   ${cd}python3 ${mapper}/tools/boundary.py --rom <rom> ${target.address} --json
    to get the recommended end; for arm, one objdump of the area to find the
    epilogue/pool boundary. If the bytes are clearly data or a literal pool,
    return status=skipped with the evidence — that is a good outcome.
-2. Peel: python3 ${mapper}/tools/peel.py --tree ${tree} --start <addr> --end <end>
+2. Peel: ${cd}python3 ${mapper}/tools/peel.py --tree ${tree} --start <addr> --end <end>
    --mode <mode>  (this also records the function in the labels TOML).
-3. Wire: python3 ${mapper}/tools/wire.py --tree ${tree} --start <addr> --end <end>
+3. Wire: ${cd}python3 ${mapper}/tools/wire.py --tree ${tree} --start <addr> --end <end>
    On exit 3 only (it refuses when the tree doesn't match its model), wire by
    hand following this tree's existing conventions: shrink the covering .incbin,
    add the object to the linker script in ROM address order.
-4. Verify: \`make check\` (tail -3) MUST pass. If it fails, revert everything
+4. Verify: ${cd}make check | tail -3 MUST pass. If it fails, revert everything
    (git checkout/clean if a repo) and return status=blocked with the detail.
    There is NO SUCH THING as an expected mismatch — a red oracle is never
    committed, never rationalized.
@@ -220,9 +237,10 @@ for (let round = 1; round <= MAX_ROUNDS; round++) {
   if (queue.length === 0 && round > 1) {
     const again = await agent(
       `Refresh the peel frontier for the mapping tree. ${ctx}
-The map has grown since the last survey. Two tool calls: identify the ROM, then
-run python3 ${mapper}/tools/frontier.py --rom <rom> and relay its JSON as-is
-(ok=true, labelsPath beside the ROM). Return ONLY the structured result.`,
+The map has grown since the last survey. Two tool calls: identify the ROM as the
+single .gba inside ${workdir}, then run ${cd}python3 ${mapper}/tools/frontier.py
+--rom <rom> and relay its JSON as-is (ok=true, labelsPath beside the ROM). Return
+ONLY the structured result.`,
       { schema: SURVEY, label: `resurvey:r${round}`, phase: 'Peel', model: CHEAP },
     )
     queue = ((again && again.ok && again.frontier) || [])
@@ -273,7 +291,7 @@ run python3 ${mapper}/tools/frontier.py --rom <rom> and relay its JSON as-is
 
 A cheaper tier judged these frontier candidates "not a function" (data/pool/
 padding). For each, verify with the tools — objdump the area, run
-${mapper}/tools/boundary.py — remembering: a bl target IS a function entry even
+${cd}python3 ${mapper}/tools/boundary.py — remembering: a bl target IS a function entry even
 without a push prologue (leaf helpers); structured words after an epilogue are
 usually pool. Do not modify code, asm, or the linker. For every verdict=data
 address, append one line "0xADDR data <ten-word reason>" to the sidecar file
@@ -320,8 +338,9 @@ const skips = results.filter(r => r.status === 'skipped')
 const report = await agent(
   `Summarize the mapping state of the tree. ${ctx}
 
-1. Confirm \`make check\` is green (tail -3; it must be — say so explicitly).
-2. Run python3 ${mapper}/tools/frontier.py --rom <rom> — its JSON carries
+1. Confirm the oracle is green: ${cd}make check | tail -3 (it must be — say so
+   explicitly).
+2. Run ${cd}python3 ${mapper}/tools/frontier.py --rom <rom> — its JSON carries
    mapped/coverageBytes and the remaining candidates. namedCount = one
    python3 -c tomllib count of entries with a name.
 3. One-paragraph summary including the recompiler handoff: the TOML is consumed
