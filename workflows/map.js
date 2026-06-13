@@ -193,6 +193,10 @@ Discipline (AGENTS.md governs; target ~8 tool calls):
    committed, never rationalized.
 5. Commit: if the tree is a git repository, commit the peel as one commit
    (message: "peel: <name> [<start>, <end>)"). Never name commercial titles.
+   BEFORE committing, confirm the labels TOML contains this function's
+   entry (peel.py records it, but a revert-and-rewire loses the record —
+   re-add it if missing; the map IS the deliverable, an unrecorded peel
+   stalls the frontier).
 
 Return ONLY the structured result.`
 
